@@ -167,11 +167,16 @@ class DropboxClient {
   /** Connectivity probe for selftest: current account info. */
   async check() {
     await this._ensureToken();
+    // RPC endpoints insist on Content-Type: application/json — send a JSON
+    // `null` body explicitly (axios would otherwise pick a form content type).
     const res = await axios.post(
       'https://api.dropboxapi.com/2/users/get_current_account',
-      null,
+      'null',
       {
-        headers: { Authorization: `Bearer ${this.accessToken}` },
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
         timeout: 15000,
         validateStatus: (s) => s >= 200 && s < 300,
       }
