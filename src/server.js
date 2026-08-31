@@ -411,6 +411,19 @@ function buildApp(ctx) {
     res.json(out);
   });
 
+  // 調査用（読み取りのみ）: 領収書1件の詳細。一覧APIとメタデータの差異確認に使う。
+  app.get('/admin/receipt/:id', async (req, res) => {
+    if (!adminGuard(req, res)) return;
+    try {
+      const data = await freee.get(`/api/1/receipts/${req.params.id}`);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({
+        error: JSON.stringify(err?.response?.data || String(err)).slice(0, 500),
+      });
+    }
+  });
+
   app.post('/admin/registrar/run', express.json(), async (req, res) => {
     if (!adminGuard(req, res)) return;
     const commit = req.body?.commit === true;
