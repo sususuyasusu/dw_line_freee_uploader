@@ -452,6 +452,34 @@ function buildApp(ctx) {
     }
   });
 
+  // 調査用（読み取りのみ）: freee OCR が発行日・金額を埋めている割合を
+  // アップロード月ごとに集計する。取引の自動登録は OCR 済みが前提なので、
+  // 「登録が進まない」ときに原因がOCR側か当方かを切り分けるために使う。
+  app.get('/admin/ocr-coverage', async (req, res) => {
+    if (!adminGuard(req, res)) return;
+    const days = Math.min(parseInt(req.query.days || '400', 10), 1200);
+    try {
+      const jst = (off) =>
+        new Date(Date.now() + 9 * 3600 * 1000 + off * 86400 * 1000).toISOString().slice(0, 10);
+      const receipts = await freee.listReceipts({ startDate: jst(-days), endDate: jst(1) });
+      const byMonth = {};
+      for (const r of receipts) {
+        const ym = (r.created_at || '').slice(0, 7) || '不明';
+        const md = r.receipt_metadatum || {};
+        const b = (byMonth[ym] = byMonth[ym] || { total: 0, withOcr: 0, withoutOcr: 0, line: 0 });
+        b.total += 1;
+        if (md.issue_date && md.amount) b.withOcr += 1;
+        else b.withoutOcr += 1;
+        if ((r.description || '').includes('LINE')) b.line += 1;
+      }
+      res.json({ windowDays: days, scanned: receipts.length, byMonth });
+    } catch (err) {
+      res.status(500).json({
+        error: JSON.stringify(err?.response?.data || String(err)).slice(0, 500),
+      });
+    }
+  });
+
   app.post('/admin/registrar/run', express.json(), async (req, res) => {
     if (!adminGuard(req, res)) return;
     const commit = req.body?.commit === true;
