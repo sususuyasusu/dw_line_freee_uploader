@@ -81,7 +81,24 @@ function sign(body) {
   const status = await res.json();
   assert.strictEqual(status.stats.webhookCalls, 1, 'webhookCalls counted (401 excluded)');
 
-  // 5. DedupGate memory behavior
+  // 5. DedupGate: スキャン結果スナップショットの照合（freeeはスタブ）
+  const fakeFreee = {
+    listReceipts: async () => [
+      { id: 111, description: 'LINE た [どら山現金領収書] 2026-08-28 19:29 msg=52951018' },
+      { id: 222, description: 'LINE ひかり [どら山現金領収書] 2026-08-31 09:00 msg=629661085397942479 img=abc123def456' },
+    ],
+  };
+  const scanGate = new DedupGate({ freee: fakeFreee, windowDays: 90 });
+  const snap = await scanGate.scanFreee();
+  assert.strictEqual(snap.count, 2);
+  assert.strictEqual(snap.hasMessage('52951018').receiptId, 111, '旧形式(下8桁)のIDも一致すること');
+  assert.strictEqual(snap.hasMessage('629661085397942479').receiptId, 222);
+  assert.strictEqual(snap.hasMessage('999999999'), null);
+  assert.strictEqual(snap.hasHash('abc123def456' + 'f'.repeat(52)).receiptId, 222, 'ハッシュ前方一致');
+  assert.strictEqual(snap.hasHash('0'.repeat(64)), null);
+  assert.strictEqual(scanGate.findLocal('52951018').status, 'uploaded', 'スキャンでメモリが温まること');
+
+  // 6. DedupGate memory behavior
   const gate = new DedupGate({ freee: null, windowDays: 90 });
   gate.markReceived('MSG1');
   assert.strictEqual(gate.findLocal('MSG1').status, 'received');
@@ -90,7 +107,7 @@ function sign(body) {
   gate.markUploaded('MSG2', { hash: 'a'.repeat(64), receiptId: 42 });
   assert.strictEqual(gate.findLocalByHash('a'.repeat(64)).receiptId, 42);
 
-  // 6. description marker round-trip
+  // 7. description marker round-trip
   const desc = 'LINE た [どら山現金領収書] 2026-08-31 09:00 msg=581553121418804532 img=abcdef012345';
   assert.strictEqual(desc.match(MSG_RE)[1], '581553121418804532');
   assert.strictEqual(desc.match(IMG_RE)[1], 'abcdef012345');

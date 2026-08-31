@@ -140,6 +140,34 @@ async function processImage({ event, messageId, replyToken, userId }, ctx) {
   const { dedup, line, freee } = ctx;
   dedup.markReceived(messageId);
 
+  // Durable gate, part 1: message id — BEFORE fetching content, so a
+  // redelivery of an already-stored receipt costs no content fetch and is
+  // still recognised after LINE's content retention window has passed.
+  let scan;
+  try {
+    scan = await dedup.scanFreee();
+    const msgHit = scan.hasMessage(messageId);
+    if (msgHit) {
+      dedup.markFinal(messageId, 'duplicate', { receiptId: msgHit.receiptId });
+      stats.duplicates += 1;
+      log.info('event.image.duplicate_durable', {
+        messageId,
+        receiptId: msgHit.receiptId,
+        matchedBy: msgHit.matchedBy,
+      });
+      await safeReply(line, replyToken, REPLY.duplicate);
+      return 'ok';
+    }
+  } catch (err) {
+    // Without a usable scan we cannot prove this is not a duplicate, and the
+    // file box is not idempotent — refuse rather than risk a double post.
+    dedup.release(messageId);
+    stats.failed += 1;
+    stats.lastError = `dedup_scan ${String(err).slice(0, 120)}`;
+    log.error('event.dedup.scan_failed', { messageId, err: String(err).slice(0, 300) });
+    return 'transient';
+  }
+
   let buffer;
   try {
     buffer = await line.fetchImageContent(messageId);
@@ -179,16 +207,16 @@ async function processImage({ event, messageId, replyToken, userId }, ctx) {
       return 'ok';
     }
 
-    // L2: durable check against freee (survives restarts — the property that
-    // makes webhook redelivery safe against the non-idempotent file box).
-    const durable = await dedup.checkFreee({ messageId, hash });
-    if (durable.found) {
-      dedup.markFinal(messageId, 'duplicate', { hash, receiptId: durable.receiptId });
+    // Durable gate, part 2: same photo re-sent as a different message —
+    // checked against the snapshot already taken above (no second scan).
+    const hashHit = scan.hasHash(hash);
+    if (hashHit) {
+      dedup.markFinal(messageId, 'duplicate', { hash, receiptId: hashHit.receiptId });
       stats.duplicates += 1;
       log.info('event.image.duplicate_durable', {
         messageId,
-        receiptId: durable.receiptId,
-        matchedBy: durable.matchedBy,
+        receiptId: hashHit.receiptId,
+        matchedBy: hashHit.matchedBy,
       });
       await safeReply(line, replyToken, REPLY.duplicate);
       return 'ok';

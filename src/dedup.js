@@ -78,11 +78,14 @@ class DedupGate {
   }
 
   /**
-   * Durable check against freee. Returns {found, receiptId, matchedBy} and
-   * seeds the in-memory maps with every marker seen, so subsequent events in
-   * this process answer locally.
+   * One durable scan of the recent freee receipts window, returned as a
+   * reusable snapshot. Callers check the message id BEFORE fetching image
+   * content (so a redelivery costs no content fetch, and is still recognised
+   * after LINE's content retention expires) and the image hash after, against
+   * the SAME snapshot — one freee scan per new message, not two.
+   * Also seeds the in-memory maps so later events answer locally.
    */
-  async checkFreee({ messageId, hash }) {
+  async scanFreee() {
     const receipts = await this.freee.listReceipts({
       startDate: this._jstDate(-this.windowDays),
       endDate: this._jstDate(1),
@@ -90,30 +93,32 @@ class DedupGate {
     this.lastScanCount = receipts.length;
     this.lastScanAt = new Date().toISOString();
 
-    let found = null;
+    const byMsg = new Map(); // full or legacy-truncated message id -> receiptId
+    const byImgPrefix = new Map(); // sha256 prefix -> receiptId
     for (const r of receipts) {
       const desc = r.description || '';
       const m = desc.match(MSG_RE);
       const h = desc.match(IMG_RE);
       if (m) {
-        this._remember(m[1], {
-          status: 'uploaded',
-          receiptId: r.id,
-          hash: h ? h[1] : undefined,
-        });
+        byMsg.set(m[1], r.id);
+        this._remember(m[1], { status: 'uploaded', receiptId: r.id, hash: h ? h[1] : undefined });
       }
-      const msgHit = m && messageId && m[1] === String(messageId);
-      // Hash markers are a 12-hex prefix; compare prefixes.
-      const hashHit = h && hash && hash.startsWith(h[1]);
-      if ((msgHit || hashHit) && !found) {
-        found = { found: true, receiptId: r.id, matchedBy: msgHit ? 'message_id' : 'image_hash' };
-      }
+      if (h) byImgPrefix.set(h[1], r.id);
     }
-    if (found) {
-      log.info('dedup.freee_hit', { messageId, ...found });
-      return found;
-    }
-    return { found: false };
+
+    return {
+      count: receipts.length,
+      hasMessage(messageId) {
+        const id = String(messageId);
+        return byMsg.has(id) ? { receiptId: byMsg.get(id), matchedBy: 'message_id' } : null;
+      },
+      hasHash(hash) {
+        for (const [prefix, receiptId] of byImgPrefix) {
+          if (hash.startsWith(prefix)) return { receiptId, matchedBy: 'image_hash' };
+        }
+        return null;
+      },
+    };
   }
 }
 
